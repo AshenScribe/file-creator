@@ -1,0 +1,6 @@
+*
+!/lua/file-creator
+!README.md
+!LICENSE
+!.gitignore
+!/lua/tests

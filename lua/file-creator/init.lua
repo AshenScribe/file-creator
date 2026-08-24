@@ -1,228 +1,192 @@
+local config = require("file-creator.config")
+local project = require("file-creator.project")
+local license = require("file-creator.license")
+local generator = require("file-creator.generator")
+local test_generator = require("file-creator.test_generator")
+local validator = require("file-creator.validator")
+local snacks = require("snacks")
+
 local M = {}
 
-local default_config = {
-    java_source_dirs = { "src/main/java", "src/test/java", "src" },
-    templates = {
-        Class     = "public class ${name} {\n    \n}\n",
-        Interface = "public interface ${name} {\n    \n}\n",
-        Enum      = "public enum ${name} {\n    \n}\n",
-        Record    = "public record ${name}() {\n    \n}\n",
-    },
-    license = {
-        enabled = true,
-        filenames = { "LICENSE", "LICENSE.txt", "LICENSE.md" },
-    },
-    should_format = true,
-}
-
-local config = {}
-
-local function notify(msg, level)
-    if #vim.api.nvim_list_uis() > 0 then
-        vim.notify(msg, level)
-    end
+M._get_package_from_path = function(path)
+    return project.get_package_from_path(path, config.get())
 end
 
-local function ends_with(str, ending)
-    return ending == "" or str:sub(-#ending) == ending
+M._get_gradle_settings_root = project.get_gradle_settings_root
+M._get_gradle_build_root = project.get_gradle_build_root
+
+M._get_license_banner = function(start_dir)
+    return license.get_license_banner(start_dir, config.get())
 end
 
-local function get_package_from_path(path)
-    for _, pattern in ipairs(config.java_source_dirs or default_config.java_source_dirs) do
-        local _, end_index = path:find("/" .. pattern .. "/")
-        if end_index then
-            local relative_path = path:sub(end_index + 1)
-            return relative_path:gsub("/", ".")
-        elseif ends_with(path, "/" .. pattern) then
-            return ""
-        end
-    end
-
-    return nil
+M._create_file = function(template_name, file_name_input, extra_opts)
+    return generator.create_file(template_name, file_name_input, config.get(), extra_opts)
 end
 
--- Exposed for mini.test
-M._get_package_from_path = get_package_from_path
-
-local function get_license_banner(start_dir)
-    local cfg = next(config) ~= nil and config or default_config
-    if not cfg.license.enabled then
-        return ""
-    end
-
-    local search_path = start_dir
-
-    local found_files = vim.fs.find(cfg.license.filenames, {
-        path = search_path,
-        upward = true,
-        limit = 1,
-    })
-
-    if #found_files == 0 then
-        return ""
-    end
-
-    local license_path = found_files[1]
-    local file = io.open(license_path, "r")
-    if not file then
-        return ""
-    end
-
-    local content = file:read("*all")
-    file:close()
-
-    if not content or content == "" then
-        return ""
-    end
-
-    content = content:gsub("^%s+", ""):gsub("%s+$", "")
-
-    local formatted = "/*\n"
-    for line in content:gmatch("([^\r\n]*)") do
-        line = line:gsub("%s+$", "")
-        if line ~= "" then
-            formatted = formatted .. " * " .. line .. "\n"
-        end
-    end
-    formatted = formatted .. " */\n\n"
-
-    return formatted
+M._create_test = function()
+    return test_generator.create_test(config.get())
 end
 
--- Exposed for mini.test
-M._get_license_banner = get_license_banner
+M._validate_name = validator.validate_file_path_input
 
-local function get_current_directory_and_package()
-    local current_buf = vim.api.nvim_get_current_buf()
-    local buf_name = vim.api.nvim_buf_get_name(current_buf)
-
-    local target_dir = nil
-
-    if buf_name ~= "" and vim.fn.filereadable(buf_name) == 1 then
-        target_dir = vim.fn.fnamemodify(buf_name, ":p:h")
+local function prompt_super_types(template_name, callback)
+local snacks = require("snacks")
+    if template_name == "Class" then
+        snacks.input({ prompt = "Super class (extends - optional): " }, function(super_class)
+            snacks.input({ prompt = "Interfaces (implements - optional, comma separated): " }, function(interfaces)
+                callback({
+                    extends = super_class or "",
+                    implements = interfaces or "",
+                })
+            end)
+        end)
+    elseif template_name == "Interface" then
+        snacks.input({ prompt = "Super interfaces (extends - optional, comma separated): " }, function(super_interfaces)
+            callback({
+                extends = super_interfaces or "",
+            })
+        end)
+    elseif template_name == "Record" or template_name == "Enum" then
+        snacks.input({ prompt = "Interfaces (implements - optional, comma separated): " }, function(interfaces)
+            callback({
+                implements = interfaces or "",
+            })
+        end)
     else
-        target_dir = vim.fs.root(0, { "build.gradle", ".git" }) or vim.fn.getcwd()
-        target_dir = vim.fn.fnamemodify(target_dir, ":p")
+        callback({})
     end
-
-    target_dir = target_dir:gsub("/$", "")
-
-    local package_name = get_package_from_path(target_dir)
-    return target_dir, package_name
 end
 
-local function create_file(template_name, file_name_input)
-    local cfg = next(config) ~= nil and config or default_config
-    local template_source = cfg.templates[template_name]
-    if not template_source then
-        notify("Invalid template selected: " .. tostring(template_name), vim.log.levels.ERROR)
+local function handle_file_creation(template_name, input_name)
+    if not input_name or input_name == "" then
         return
     end
 
-    local base_target_dir, base_package_name = get_current_directory_and_package()
+    input_name = vim.trim(input_name):gsub("%.java$", "")
 
-    file_name_input = file_name_input:gsub("\\", "/")
-
-    local sub_dir = vim.fn.fnamemodify(file_name_input, ":h")
-    local file_name = vim.fn.fnamemodify(file_name_input, ":t")
-
-    local target_dir = base_target_dir
-    local final_package_name = base_package_name
-
-    if sub_dir ~= "" and sub_dir ~= "." then
-        target_dir = vim.fs.joinpath(base_target_dir, sub_dir)
-
-        if base_package_name and base_package_name ~= "" then
-            final_package_name = base_package_name .. "." .. sub_dir:gsub("/", ".")
-        else
-            final_package_name = sub_dir:gsub("/", ".")
+    -- Comprehensive Java Identifier & Path Validation
+    local valid, err = validator.validate_file_path_input(input_name)
+    if not valid then
+        if #vim.api.nvim_list_uis() > 0 then
+            vim.notify(err, vim.log.levels.ERROR)
         end
-    end
-
-    if vim.fn.isdirectory(target_dir) == 0 then
-        local success = vim.fn.mkdir(target_dir, "p")
-        if success == 0 then
-            notify("Could not create directory: " .. target_dir, vim.log.levels.ERROR)
-            return
-        end
-    end
-
-    local file_path = vim.fs.joinpath(target_dir, file_name .. ".java")
-
-    if vim.fn.filereadable(file_path) == 1 then
-        notify("File already exists: " .. file_path, vim.log.levels.ERROR)
         return
     end
 
-    local license_banner = get_license_banner(target_dir)
-    local content = license_banner
-
-    if final_package_name and final_package_name ~= "" then
-        content = content .. "package " .. final_package_name .. ";\n\n"
-    end
-
-    content = content .. template_source:gsub("${name}", file_name)
-
-    local file = io.open(file_path, "w")
-    if not file then
-        notify("Could not create file: " .. file_path, vim.log.levels.ERROR)
-        return
-    end
-    file:write(content)
-    file:close()
-
-    -- Only jump to/edit file if UI is active (skip in headless tests)
-    if #vim.api.nvim_list_uis() > 0 then
-        vim.cmd("edit " .. vim.fn.fnameescape(file_path))
-        if cfg.should_format then
-            vim.lsp.buf.format({ async = true })
-        end
-    end
-
-    notify("Created and opened: " .. file_path, vim.log.levels.INFO)
-end
-
--- Exposed for mini.test
-M._create_file = create_file
-
-local function ask_for_name(template_name)
-    vim.ui.input({ prompt = template_name .. " Name: " }, function(input_name)
-        if not input_name or input_name == "" then
-            return
-        end
-
-        if input_name:match("%s") then
-            notify("Name cannot contain spaces", vim.log.levels.ERROR)
-            return
-        end
-
-        create_file(template_name, input_name)
+    prompt_super_types(template_name, function(extra_opts)
+        generator.create_file(template_name, input_name, config.get(), extra_opts)
     end)
 end
 
-function M.setup(opts)
-    config = vim.tbl_deep_extend("force", default_config, opts or {})
+local function ask_for_name(template_name)
+local snacks = require("snacks")
+    snacks.input({ prompt = template_name .. " Name: " }, function(input_name)
+        handle_file_creation(template_name, input_name)
+    end)
+end
 
-    vim.api.nvim_create_user_command("CreateJavaClass", function()
-        ask_for_name("Class")
-    end, {
-        desc = "Quickly create a new Java Class",
-    })
-    vim.api.nvim_create_user_command("CreateJavaInterface", function()
-        ask_for_name("Interface")
-    end, {
-        desc = "Quickly create a new Java Interface",
-    })
-    vim.api.nvim_create_user_command("CreateJavaEnum", function()
-        ask_for_name("Enum")
-    end, {
-        desc = "Quickly create a new Java Enum",
-    })
-    vim.api.nvim_create_user_command("CreateJavaRecord", function()
-        ask_for_name("Record")
-    end, {
-        desc = "Quickly create a new Java Record",
-    })
+local function create_java_file_picker()
+local snacks = require("snacks")
+    local items = {
+        { idx = 1, text = "Class",     template = "Class" },
+        { idx = 2, text = "Interface", template = "Interface" },
+        { idx = 3, text = "Enum",      template = "Enum" },
+        { idx = 4, text = "Record",    template = "Record" },
+    }
+
+    if snacks.picker and snacks.picker.pick then
+        snacks.picker.pick({
+            title = " Create Java File (Type name & select template) ",
+            layout = {
+                preset = "select",
+            },
+            live = true,
+            finder = function()
+                return items
+            end,
+            format = "text",
+            confirm = function(picker, item)
+                local input_name = picker.input.filter.search
+                if not input_name or input_name == "" then
+                    input_name = picker.input.filter.pattern
+                end
+
+                if (not input_name or input_name == "") and picker.input and picker.input.win and picker.input.win.buf and vim.api.nvim_buf_is_valid(picker.input.win.buf) then
+                    local lines = vim.api.nvim_buf_get_lines(picker.input.win.buf, 0, -1, false)
+                    input_name = vim.trim(lines[1] or "")
+                end
+
+                picker:close()
+
+                if not item then
+                    return
+                end
+
+                local template_name = item.template or item.text
+
+                if input_name and input_name ~= "" then
+                    handle_file_creation(template_name, input_name)
+                else
+                    ask_for_name(template_name)
+                end
+            end,
+        })
+    else
+        vim.ui.select({ "Class", "Interface", "Enum", "Record" }, {
+            prompt = "Select Java Type: ",
+        }, function(choice)
+            if choice then
+                ask_for_name(choice)
+            end
+        end)
+    end
+end
+
+local function create_cmd_handler(template_name)
+    return function(cmd_opts)
+        local arg = cmd_opts.args and vim.trim(cmd_opts.args) or ""
+        if arg ~= "" then
+            handle_file_creation(template_name, arg)
+        else
+            ask_for_name(template_name)
+        end
+    end
+end
+
+function M.setup(opts)
+    config.setup(opts)
+
+    vim.api.nvim_create_user_command("CreateJavaFile", function()
+        create_java_file_picker()
+    end, { desc = "Create a new Java file by typing name and selecting template" })
+
+    vim.api.nvim_create_user_command(
+        "CreateJavaClass",
+        create_cmd_handler("Class"),
+        { nargs = "?", desc = "Quickly create a new Java Class" }
+    )
+
+    vim.api.nvim_create_user_command(
+        "CreateJavaInterface",
+        create_cmd_handler("Interface"),
+        { nargs = "?", desc = "Quickly create a new Java Interface" }
+    )
+
+    vim.api.nvim_create_user_command(
+        "CreateJavaEnum",
+        create_cmd_handler("Enum"),
+        { nargs = "?", desc = "Quickly create a new Java Enum" }
+    )
+
+    vim.api.nvim_create_user_command(
+        "CreateJavaRecord",
+        create_cmd_handler("Record"),
+        { nargs = "?", desc = "Quickly create a new Java Record" }
+    )
+
+    vim.api.nvim_create_user_command("CreateTest", function()
+        test_generator.create_test(config.get())
+    end, { desc = "Quickly create a Test File for current Java File" })
 end
 
 return M
