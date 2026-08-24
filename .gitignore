@@ -1,6 +1,5 @@
-*
-!/lua/file-creator
-!README.md
-!LICENSE
-!.gitignore
-!/lua/tests
+*.swp
+*.swo
+*~
+.DS_Store
+*.log

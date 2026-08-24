@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: MiniTest
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          version: nightly
+          neovim: true
+
+      - name: Install mini.nvim
+        run: |
+          git clone --depth 1 https://github.com/echasnovski/mini.nvim.git \
+            "$HOME/mini.nvim"
+
+      - name: Run tests
+        run: |
+          nvim --headless -u NONE \
+            --cmd "set rtp^=$PWD" \
+            --cmd "set rtp^=$HOME/mini.nvim" \
+            -c "lua require('mini.test').setup({
+              collect = {
+                find_files = function()
+                  return vim.fn.globpath(
+                    'lua/tests',
+                    '**/test_*.lua',
+                    true,
+                    true
+                  )
+                end,
+              },
+            }); MiniTest.run()" \
+            -c "qa!"

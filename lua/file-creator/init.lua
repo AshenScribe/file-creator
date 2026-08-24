@@ -4,7 +4,6 @@ local license = require("file-creator.license")
 local generator = require("file-creator.generator")
 local test_generator = require("file-creator.test_generator")
 local validator = require("file-creator.validator")
-local snacks = require("snacks")
 
 local M = {}
 
