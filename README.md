@@ -71,7 +71,7 @@ Install with your preferred Neovim package manager.
 
 ```lua
 {
-    "omniCoder77/file-creator.nvim",
+    "AshenScribe/file-creator",
     dependencies = {
         "folke/snacks.nvim",
     },
